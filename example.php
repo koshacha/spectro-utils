@@ -11,7 +11,11 @@ includeUtilities();
 Modules::enable();
 
 Route::lazyPage('/about/:cat/:id', function($id, $cat, $options) {
-    Route::useTemplate('deliveries');
+    if (!User::isAuthorized()) {
+        redirect('/login');
+    }
+
+    $t = template('deliveries');
 
     Route::setMeta([
         'title' => "About Us",
@@ -19,11 +23,11 @@ Route::lazyPage('/about/:cat/:id', function($id, $cat, $options) {
         'description' => 'About Us 123'
     ]);
 
-    return [
-        '$template' => 'test',
-        'TITLE' => "About Us: $cat",
-        'DESCRIPTION' => 'About Us ' . $id
+    $fields = [
+        'data' => '123'
     ];
+
+    return view($t['page'], $fields);
 });
 
 Entity::register('metal', [

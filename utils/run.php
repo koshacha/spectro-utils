@@ -21,6 +21,8 @@ includeUtilities();
 Modules::enable();
 
 function __shared() {
+    Modules::autorun();
+
     if (file_exists(IMGPATH . 'shared.php')) {
         require_once IMGPATH . 'shared.php';
     }
@@ -54,3 +56,4 @@ function ___actions() {
 
     Action::exec();
 }
+

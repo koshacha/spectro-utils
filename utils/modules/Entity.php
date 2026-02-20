@@ -60,57 +60,65 @@ class BaseEntity
         return ['type' => 'direct', 'column' => $fieldName];
     }
 
-    protected static function buildWhereClause($conditions)
+    protected static function buildWhereClause($conditions, &$paramIndex = 0)
     {
         if (empty($conditions)) {
             return ['1', []];
         }
 
         $params = [];
-        $paramIndex = 0;
         
         $operator = 'AND';
-        if (!empty($conditions)) {
-            $first = $conditions[0];
-            if (is_string($first) && in_array(strtolower($first), ['and', 'or'])) {
-                $operator = strtoupper(array_shift($conditions));
-            }
+        $first = $conditions[0];
+        if (is_string($first) && in_array(strtolower($first), ['and', 'or'])) {
+            $operator = strtoupper(array_shift($conditions));
         }
 
         $sqlParts = [];
         foreach ($conditions as $condition) {
-            if (count($condition) !== 3) {
-                throw new InvalidArgumentException('Invalid condition format.');
-            }
-            list($field, $op, $value) = $condition;
-            $paramName = ":param_{$paramIndex}";
-            $paramKey = "param_{$paramIndex}";
-            $params[$paramKey] = $value;
-            $paramIndex++;
+            // Check for nested group
+            if (is_array($condition) && isset($condition[0]) && is_string($condition[0]) && in_array(strtoupper($condition[0]), ['AND', 'OR'])) {
+                list($nestedSql, $nestedParams) = static::buildWhereClause($condition, $paramIndex);
+                if ($nestedSql !== '1') {
+                    $sqlParts[] = "({$nestedSql})";
+                    $params = array_merge($params, $nestedParams);
+                }
+            } 
+            // Check for simple condition
+            else if (is_array($condition) && count($condition) === 3 && is_string($condition[1])) {
+                list($field, $op, $value) = $condition;
+                
+                $paramName = ":param_{$paramIndex}";
+                $paramKey = "param_{$paramIndex}";
+                $params[$paramKey] = $value;
+                $paramIndex++;
 
-            $mapping = static::findFieldMapping($field);
-            $fieldSql = '';
+                $mapping = static::findFieldMapping($field);
+                $fieldSql = '';
 
-            switch ($mapping['type']) {
-                case 'json':
-                    $col = $mapping['column'];
-                    $fld = $mapping['field'];
-                    $fieldSql = "JSON_UNQUOTE(JSON_EXTRACT(`{$col}`, '$.{$fld}'))";
-                    break;
-                case 'grouped':
-                    $col = $mapping['column'];
-                    $idx = $mapping['index'] + 1;
-                    $sep = static::getSeparator($col);
-                    $fieldSql = "SUBSTRING_INDEX(SUBSTRING_INDEX(`{$col}`, '{$sep}', {$idx}), '{$sep}', -1)";
-                    break;
-                case 'direct':
-                default:
-                    $col = preg_replace('/[^a-zA-Z0-9_]/', '', $mapping['column']);
-                    $fieldSql = "`{$col}`";
-                    break;
+                switch ($mapping['type']) {
+                    case 'json':
+                        $col = $mapping['column'];
+                        $fld = $mapping['field'];
+                        $fieldSql = "JSON_UNQUOTE(JSON_EXTRACT(`{$col}`, '$.{$fld}'))";
+                        break;
+                    case 'grouped':
+                        $col = $mapping['column'];
+                        $idx = $mapping['index'] + 1;
+                        $sep = static::getSeparator($col);
+                        $fieldSql = "SUBSTRING_INDEX(SUBSTRING_INDEX(`{$col}`, '{$sep}', {$idx}), '{$sep}', -1)";
+                        break;
+                    case 'direct':
+                    default:
+                        $col = preg_replace('/[^a-zA-Z0-9_]/', '', $mapping['column']);
+                        $fieldSql = "`{$col}`";
+                        break;
+                }
+                
+                $sqlParts[] = "{$fieldSql} {$op} {$paramName}";
+            } else {
+                throw new InvalidArgumentException('Invalid condition format: ' . print_r($condition, true));
             }
-            
-            $sqlParts[] = "{$fieldSql} {$op} {$paramName}";
         }
 
         if (empty($sqlParts)) {
@@ -260,7 +268,7 @@ class BaseEntity
         return static::hydrate($row);
     }
 
-    public static function get($conditions = [])
+    public static function get($conditions = [], $options = [])
     {
         $definition = static::getDefinition();
         $table = $definition['table'];
@@ -276,14 +284,86 @@ class BaseEntity
             $params = array_merge($params, $userParams);
         }
 
-        $rows = Db::all("SELECT * FROM `{$table}` WHERE {$finalWhere}", $params);
+        // Get total count for pagination if requested
+        if (array_key_exists('pagination', $options)) {
+            $countSql = "SELECT COUNT(*) as total FROM `{$table}` WHERE {$finalWhere}";
+            $countResult = Db::one($countSql, $params);
+            $totalRows = $countResult ? (int)$countResult['total'] : 0;
 
+            if (!is_array($options['pagination'])) {
+                $options['pagination'] = [];
+            }
+
+            $options['pagination']['rowCount'] = $totalRows;
+            
+            if (isset($options['per_page']) && is_numeric($options['per_page']) && $options['per_page'] > 0) {
+                $options['pagination']['pagesCount'] = (int)ceil($totalRows / (int)$options['per_page']);
+            } else {
+                $options['pagination']['pagesCount'] = $totalRows > 0 ? 1 : 0;
+            }
+        }
+
+        // Sorting
+        $orderClause = '';
+        if (isset($options['sort'])) {
+            $sortField = $options['sort'];
+            
+            $orderDirection = 'ASC';
+            if (isset($options['order']) && strtolower($options['order']) === 'desc') {
+                $orderDirection = 'DESC';
+            }
+            
+            $mapping = static::findFieldMapping($sortField);
+            $sortSql = '';
+            switch ($mapping['type']) {
+                case 'json':
+                    $col = $mapping['column'];
+                    $fld = $mapping['field'];
+                    $sortSql = "JSON_UNQUOTE(JSON_EXTRACT(`{$col}`, '$.{$fld}'))";
+                    break;
+                case 'grouped':
+                    $col = $mapping['column'];
+                    $idx = $mapping['index'] + 1;
+                    $sep = static::getSeparator($col);
+                    $sortSql = "SUBSTRING_INDEX(SUBSTRING_INDEX(`{$col}`, '{$sep}', {$idx}), '{$sep}', -1)";
+                    break;
+                case 'direct':
+                default:
+                    $col = preg_replace('/[^a-zA-Z0-9_]/', '', $mapping['column']);
+                    $sortSql = "`{$col}`";
+                    break;
+            }
+
+            if ($sortSql) {
+                 $orderClause = " ORDER BY {$sortSql} {$orderDirection}";
+            }
+        }
+
+        // Pagination
+        $limitClause = '';
+        if (isset($options['per_page']) && is_numeric($options['per_page'])) {
+            $perPage = (int)$options['per_page'];
+            $page = (isset($options['page']) && is_numeric($options['page'])) ? (int)$options['page'] : 1;
+            if ($page < 1) $page = 1;
+            $offset = ($page - 1) * $perPage;
+            $limitClause = " LIMIT {$offset}, {$perPage}";
+        }
+
+        $sql = "SELECT * FROM `{$table}` WHERE {$finalWhere}{$orderClause}{$limitClause}";
+        $rows = Db::all($sql, $params);
+
+        if (array_key_exists('pagination', $options)) {
+            return [
+                'items' => array_map([static::class, 'hydrate'], $rows),
+                'pagination' => $options['pagination']
+            ];
+        }
         
         return array_map([static::class, 'hydrate'], $rows);
     }
 
-    public static function all() {
-        return static::get();
+    public static function all($options = []) {
+        return static::get([], $options);
     }
 
     public static function update($conditions, $data)
@@ -397,12 +477,10 @@ class BaseEntity
             throw $e;
         }
 
-        
-
         return $updatedCount;
     }
 
-    public static function deleteById($id)
+    public static function deleteOne($id)
     {
         $definition = static::getDefinition();
         $table = $definition['table'];
@@ -413,8 +491,84 @@ class BaseEntity
         ];
         return Db::delete($table, $where, $params);
     }
-}
 
+    public static function getVariants($fields = [])
+    {
+        if (empty($fields) || !is_array($fields)) {
+            return [];
+        }
+
+        $definition = static::getDefinition();
+        $table = $definition['table'];
+        $results = [];
+
+        $typeWhere = "`TYPE` = :_entity_type";
+        $baseParams = ['_entity_type' => static::$entityName];
+
+        foreach ($fields as $fieldName) {
+            $mapping = static::findFieldMapping($fieldName);
+            
+            if (!$mapping) {
+                $results[$fieldName] = [];
+                continue;
+            }
+
+            // Handle grouped strings separately by processing in PHP
+            if ($mapping['type'] === 'grouped') {
+                $col = $mapping['column'];
+                $idx = $mapping['index'];
+                $sep = static::getSeparator($col);
+
+                $query = "SELECT `{$col}` FROM `{$table}` WHERE {$typeWhere} AND `{$col}` IS NOT NULL AND `{$col}` != ''";
+                $allColumnValues = Db::all($query, $baseParams);
+
+                $distinctVariants = [];
+                foreach ($allColumnValues as $row) {
+                    $groupedValue = $row[$col];
+                    $parts = explode($sep, $groupedValue);
+                    if (isset($parts[$idx]) && $parts[$idx] !== '' && $parts[$idx] !== null) {
+                        $distinctVariants[$parts[$idx]] = true;
+                    }
+                }
+                $finalVariants = array_keys($distinctVariants);
+                sort($finalVariants);
+                $results[$fieldName] = $finalVariants;
+                continue; // Move to next field
+            }
+
+            // Handle 'direct' and 'json' types with a DISTINCT SQL query
+            $fieldSql = '';
+            switch ($mapping['type']) {
+                case 'json':
+                    $col = $mapping['column'];
+                    $fld = $mapping['field'];
+                    $fieldSql = "JSON_UNQUOTE(JSON_EXTRACT(`{$col}`, '$.{$fld}'))";
+                    break;
+                case 'direct':
+                default:
+                    $col = preg_replace('/[^a-zA-Z0-9_]/', '', $mapping['column']);
+                    $fieldSql = "`{$col}`";
+                    break;
+            }
+
+            if (!$fieldSql) {
+                $results[$fieldName] = [];
+                continue;
+            }
+
+            $query = "SELECT DISTINCT {$fieldSql} as variant 
+                      FROM `{$table}` 
+                      WHERE {$typeWhere} AND {$fieldSql} IS NOT NULL AND {$fieldSql} != ''
+                      ORDER BY variant ASC";
+            
+            $variants = Db::all($query, $baseParams);
+            
+            $results[$fieldName] = array_column($variants, 'variant');
+        }
+
+        return $results;
+    }
+}
 
 class Entity
 {
@@ -498,6 +652,179 @@ class Entity
 
         $classCode = "class {$className} extends BaseEntity { protected static \$entityName = '{$entityName}'; }" ;
         eval($classCode);
+
+        self::postInstall($entityName, $options);
+    }
+
+    private static function postInstall($entityName, $options) {
+        $className = ucfirst($entityName) . 'Entity';
+
+        $hasCatalog = is_array($options['catalog']);
+        $hasDetailPage = is_array($options['detail']) || $options['detail'] === true;
+
+        $catalogUrl = $options['catalog']['url'] ? $options['catalog']['url'] : '/' . $entityName;
+        $detailUrl = $catalogUrl . '/:id';
+        $editUrl = $detailUrl . '/edit';
+        $deleteUrl = $detailUrl . '/delete';
+        $createUrl = $catalogUrl . '/new';
+        $per_page = isset($options['catalog']['per_page']) ? $options['catalog']['per_page'] : 5;
+
+        if ($hasCatalog) {
+            Route::page($catalogUrl, function($page = 1, $filter = []) use ($entityName, $className, $options, $hasDetailPage, $detailUrl, $createUrl, $per_page) {
+                $t = template('entity', KYUTILS_PATH);
+
+                if (!empty($filter)) {
+                    $preparedFilter = ['AND'];
+
+
+                    foreach ($filter as $key => $value) {
+                        if (!array_key_exists($key, $options['filter']) || empty($value)) continue;
+
+                        $settings = $options['filter'][$key];
+                        $strict = $settings[0] === '!';
+                        $settings = str_replace('!', '', $settings);
+                        
+                        switch ($settings) {
+                            case 'input': 
+                                $operator = $strict ? '=' : 'LIKE'; 
+                                if (!$strict) $value = '%' . $value . '%'; break;
+                            case 'checkbox': {
+                                $op = $strict ? 'AND' : 'OR';
+                                $suboperator = [$op];
+
+                                foreach ($value as $v) {
+                                    $suboperator[] = [$key, '=', $v];
+                                }
+                                $preparedFilter[] = $suboperator;
+                                $skip = true;
+                                break;
+                            }
+                            case 'radio':
+                            case 'select':
+                                $operator = '=';
+                            default:
+                                $operator = $strict ? '=' : 'LIKE';
+                        }
+
+                        if ($skip) continue;
+
+                        $preparedFilter[] = [$key, $operator, $value];
+                    }
+
+                    $result = $className::get($preparedFilter,
+                    [
+                        'page' => $page,
+                        'per_page' => $per_page,
+                        'pagination' => true
+                    ]);
+                } else {
+                    $result = $className::all([
+                        'page' => $page,
+                        'per_page' => $per_page,
+                        'pagination' => true
+                    ]);
+                }
+                
+
+                if ($options['filter']) {
+                    $variants = $className::getVariants(array_keys($options['filter']));
+                }
+
+                $items = $result['items'];
+                $pagination = $result['pagination'];
+
+                $title = $options['catalog']['title'] ? $options['catalog']['title'] : $entityName;
+                $fields = $options['fields'] ? $options['fields'] : [];
+
+                foreach ($items as $i => &$item) {
+                    $item['detailUrl'] = str_replace(':id', $item['id'], $detailUrl);
+                    $item['editUrl'] = $item['detailUrl'] . '/edit';
+                    $item['deleteUrl'] = $item['detailUrl'] . '/delete';
+                }
+
+                $isAdmin = User::isAdmin();
+
+                return view($t['catalog'], [
+                    'entityName' => $entityName,
+                    'items' => $items,
+                    'title' => $title,
+                    'fields' => $fields,
+                    'options' => [
+                        'name' => $entityName,
+                        'hasDetail' => $hasDetailPage,
+                        'isAdmin' => $isAdmin,
+                        'createUrl' => $createUrl
+                    ],
+                    'pagination' => $pagination,
+                    'filter' => [
+                        'labels' => $fields,
+                        'fields' => $options['filter'],
+                        'variants' => $variants
+                    ],
+                    'sort' => [
+                        'fields' => $options['sort']
+                    ]
+                ]);
+            });
+
+            Route::page($editUrl, function($id) use ($entityName, $options, $className) {
+                $t = template('entity', KYUTILS_PATH);
+                $item = $className::getOne($id);
+                $fields = $options['fields'] ? $options['fields'] : [];
+                return view($t['edit'], [
+                    'entityName' => $entityName,
+                    'item' => $item,
+                    'fields' => $fields,
+                    'options' => [
+                        'name' => $entityName,
+                        'hasDetail' => $hasDetailPage,
+                        'isAdmin' => $isAdmin
+                    ]
+                ]);
+            });
+
+            Route::page($deleteUrl, function($id) use ($entityName, $className, $catalogUrl) {
+                $className::deleteOne($id);
+                Route::redirect($catalogUrl);
+            });
+        }
+
+        if ($hasDetailPage) {
+            Route::page($detailUrl, function($id) use ($entityName, $options, $className) {
+                $t = template('entity', KYUTILS_PATH);
+                $item = $className::getOne($id);
+                $fields = $options['fields'] ? $options['fields'] : [];
+                return view($t['detail'], [
+                    'entityName' => $entityName,
+                    'item' => $item,
+                    'fields' => $fields
+                ]);
+            });
+        }
+
+        Action::handle("edit-{$entityName}", function($id, $field) use ($className, $catalogUrl) {
+            $className::update($id, $field);
+            Route::redirect($catalogUrl);
+        });
+
+        Action::handle("create-{$entityName}", function($id, $field) use ($className, $catalogUrl) {
+            $className::create($field);
+            Route::redirect($catalogUrl);
+        });
+
+        Route::page($createUrl, function() use ($entityName, $options, $className) {
+            $t = template('entity', KYUTILS_PATH);
+            $fields = $options['fields'] ? $options['fields'] : [];
+            return view($t['create'], [
+                'entityName' => $entityName,
+                'fields' => $fields,
+                'options' => [
+                    'name' => $entityName,
+                    'hasDetail' => $hasDetailPage,
+                    'isAdmin' => $isAdmin
+                ]
+            ]);
+        });
     }
 
     public static function getDefinition($entityName)

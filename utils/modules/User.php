@@ -21,9 +21,9 @@ class User {
         return $flag;
     }
 
-    public static function getUserData($id = null) {
+    public static function get($id = null) {
         if ($id === null && self::isAuthorized()) {
-            return self::getUserData(USERID);
+            return self::get(USERID);
         }
 
         $res = db_query("SELECT NAME FROM ".PREFIX."ROWS WHERE ID=" . $id);

@@ -2,6 +2,7 @@
 
 class Modules {
     private static $loaded_classes = [];
+    private static $autorun_classes = [];
 
     public static function enable($modules = []) {
         $autorun_classes = [];
@@ -97,9 +98,7 @@ class Modules {
             }
         }
 
-        foreach ($autorun_classes as $class) {
-            $class::autorun();
-        }
+        self::$autorun_classes = $autorun_classes;
 
         define('SPECTRO_MODULES', count(self::$loaded_classes));
     }
@@ -111,5 +110,11 @@ class Modules {
             $modules[] = basename($file, '.php');
         }
         return $modules;
+    }
+
+    public static function autorun() {
+        foreach (self::$autorun_classes as $class) {
+            $class::autorun();
+        }
     }
 }

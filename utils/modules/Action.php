@@ -12,7 +12,6 @@ class Action {
     }
 
     private static function renderAnswer($data) {
-        $GLOBALS['actiondone'] = 1;
         $GLOBALS['actionresult'] = $data['$result'];
 
         $text = isset($data['$json']) ? json_encode($data['$json']) : $data['$text'];
@@ -47,13 +46,14 @@ class Action {
                 trigger_error("Invalid callback format.", E_USER_WARNING);
                 return;
             }
-    
+            $GLOBALS['actiondone'] = 1;
+            
             $parameters = $reflection->getParameters();
             $args = [];
 
             $req = Request::get();
             $files = Request::files();
-    
+
             foreach ($parameters as $parameter) {
                 $name = $parameter->getName();
                 $value = null;
@@ -79,8 +79,8 @@ class Action {
                           
                       }
                   } else {
-                    trigger_error("Missing argument: " . $name, E_USER_WARNING);
-                    return;
+                    // trigger_error("Missing argument: " . $name, E_USER_WARNING);
+                    // return;
                   }
                 }
     

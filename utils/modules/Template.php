@@ -14,6 +14,8 @@ class Template {
         $s->setCacheDir(KYUTILS_PATH . '/cache/smarty/cache');
         $s->setCompileDir(KYUTILS_PATH . '/cache/smarty/templates_c');
 
+        $s->addPluginsDir(KYUTILS_PATH . '/assets/smarty_plugins');
+
         self::$s = $s;
     }
 
@@ -110,12 +112,14 @@ class Template {
 }
 
 if (!function_exists('template')) {
-    function template($name) {
+    function template($name, $dir = IMGPATH) {
         $filename = str_replace('.html', '', $name) . '.html';
+        $path = $dir . '/views/' . $filename;
+        $path = str_replace('//', '/', $path);
 
-        if (!file_exists(KYUTILS_TEMPLATES_DIR . '/' . $filename)) return null;
+        if (!file_exists($path)) return null;
 
-        return Template::useTemplates(KYUTILS_TEMPLATES_DIR . '/' . $filename);
+        return Template::useTemplates($path);
     }
 }
 

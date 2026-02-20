@@ -343,6 +343,30 @@ class PDO_DB
         return $this->query($dbQuery, $allParams);
     }
 
+	/**
+     * delete
+     *
+     * @param string $table
+     * @param string $where
+     * @param array $params
+     * @return int affect rows
+     */
+    public function delete($table, $where, $params)
+    {
+        if (empty($where)) {
+            return 0;
+        }
+
+        $dbQuery = "DELETE FROM `{$table}`";
+
+        // Add WHERE clause
+        if (!empty($where)) {
+            $dbQuery .= " WHERE " . $where;
+        }
+
+        return $this->query($dbQuery, $params);
+    }
+
     /**
      * @return string
      */
